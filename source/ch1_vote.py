@@ -1,26 +1,25 @@
-import redis
 import time
-import logging
-from source import load_yaml
 
-# 需求: 文章按照用户投票 + 文章发表的时长计算得分进行排序展示，得分 = 文章得到的票数 * 常量 + 文章发布的时间
-# 设计: ZSET time: 文章Id:文章创建时间
-#      SET  voted + 文章Id: 用户Id 每篇文章给它投票的用户
-#      ZSET score: 文章Id:文章得分(时间+投票)
-#      HASH votes: 文章Id:被投票次数
+from source import *
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(filename)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-prop = load_yaml.get('../properties/env.yaml')
-connection = redis.Redis(host=prop['redis']['server'],
-                         port=prop['redis']['port'],
-                         db=prop['redis']['db'],
-                         password=prop['redis']['password'])
+"""
+需求: 文章按照用户投票 + 文章发表的时长计算得分进行排序展示，得分 = 文章得到的票数 * 常量 + 文章发布的时间
+设计: ZSET time: 文章Id:文章创建时间
+     SET  voted + 文章Id: 用户Id 每篇文章给它投票的用户
+     ZSET score: 文章Id:文章得分(时间+投票)
+     HASH votes: 文章Id:被投票次数
+"""
 
 # 用于判断文章发布时间是否超过一周，超过不能投票
 ONE_WEEK_SECOND = 7 * 86400
 # 按照一天需要200票计算得出常量
 VOTE_SCORE = float(86400 / 200)
+# 每页数量
+PER_PAGE = 10
+
+"""
+给文章投票
+"""
 
 
 def article_vote(conn, user_id, article):
@@ -41,6 +40,11 @@ def article_vote(conn, user_id, article):
             # 将记录文章的投票次数加1
             conn.hincrby(article, 'votes', 1)
             logging.info("vote article success!")
+
+
+"""
+保存文章
+"""
 
 
 def post_article(conn, user_id, title, link):
@@ -65,5 +69,52 @@ def post_article(conn, user_id, title, link):
     logging.info('post article success!')
 
 
-post_article(connection, 168, 'hello world', 'https://hello.com/hello_world')
-article_vote(connection, 169, 'article:101')
+"""
+按照时间或分数获取文章(降序)
+"""
+
+
+def get_articles(conn, page, order='score'):
+    start = (page - 1) * PER_PAGE
+    end = start + PER_PAGE - 1
+    ids = conn.zrevrange(order, start, end)
+    articles = []
+    for a_id in ids:
+        content = conn.hgetall(a_id)
+        content['id'] = a_id
+        articles.append(content)
+    return articles
+
+
+"""
+添加文章到群组，或从群组中移除文章
+"""
+
+
+def add_remove_groups(conn, article_id, to_add=None, to_remove=None):
+    if to_remove is None:
+        to_remove = []
+    if to_add is None:
+        to_add = []
+    article = 'article' + article_id
+    for group in to_add:
+        conn.sadd('group' + group, article)
+    for group in to_remove:
+        conn.srem('group' + group, article)
+
+
+"""
+获取指定group的文章
+"""
+
+
+def get_group_articles(conn, group, page, order='score'):
+    key = order + group
+    # 判断是否由缓存
+    if not conn.exist(key):
+        conn.zinterstore(key, ['group' + group, order], aggregate='max')
+        conn.expire(key, 60)
+    return get_articles(conn, page, key)
+
+
+get_articles(connection, 1)
