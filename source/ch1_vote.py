@@ -112,6 +112,7 @@ def get_group_articles(conn, group, page, order='score'):
     key = order + group
     # 判断是否由缓存
     if not conn.exist(key):
+        # zinterstore 求一个或多个有序集的交集，并保存到的结果中，结果集中某个成员的分数值是所有给定集下该成员分数值之和
         conn.zinterstore(key, ['group' + group, order], aggregate='max')
         conn.expire(key, 60)
     return get_articles(conn, page, key)
