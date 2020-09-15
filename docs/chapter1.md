@@ -335,3 +335,168 @@ $ ZUNIONSTORE zunion 2 zset-1 zset-2 AGGREGATE SUM
 > `发布与订阅(pub/sub)`的特点是`订阅者(subscribe)`负责订阅`频道(channel)`，`发布者(publisher)`负责向频道中发送`二进制字符串`消息。
 >
 > ![](https://image.leejay.top/image/20200914/PGhhPKDQGtFh.png?imageslim)
+
+| 命令                        | 作用                                   |
+| --------------------------- | -------------------------------------- |
+| SUBSCRIBE [ channel ... ]   | 订阅一个或多个频道                     |
+| UNSUBSCRIBE [ channel ... ] | 退订一个或多个频道，不传频道就退订全部 |
+| PUBLISH <channel> <message> | 向给定频道发送消息                     |
+| PSUBSCIBE [ pattern ...]    | 订阅正则匹配的所有频道                 |
+| PUNSUBSCRIBE []             | 退订正则匹配的模式，不传默认退订全部   |
+
+```shell
+# 订阅channel
+$ SUBSCRIBE channel
+1)  "subscribe"
+2)  "channel"
+3)  "1"
+# 向频道发送消息
+$ PUBLISH channel helloworld
+ 1)  "message"
+ 2)  "channel"
+ 3)  "helloworld"
+```
+
+```python
+def publish():
+    # 用于连接时长
+    time.sleep(2)
+    for i in [1, 2, 3, 4, 5, 6]:
+        connection.publish('channel', i)
+
+
+def subscribe(conn):
+    # 启动线程发送消息
+    threading.Thread(target=publish, args=()).start()
+    # 获取发布/订阅对象
+    pub_sub = conn.pubsub()
+    # 订阅频道,一开始会出现确认信息：data表示此频道被订阅数量
+    # {'type': 'subscribe', 'pattern': None, 'channel': b'channel', 'data': 1}
+    pub_sub.subscribe('channel')
+    count = 0
+    for item in pub_sub.listen():
+        # {'type': 'message', 'pattern': None, 'channel': b'channel', 'data': b'1'}
+        print(item)
+        count += 1
+        if count == 5:
+         # 取消订阅也会出现信息：data表示此频道被订阅数量
+         #{'type': 'unsubscribe', 'pattern': None, 'channel': b'channel', 'data': 0}
+            pub_sub.unsubscribe('channel')
+```
+
+> `发布/订阅`模式的两个缺点：
+>
+> 1. 如果客户端订阅了某些频道，但是它的消费速度不够快，带来的消息堆积会导致Redis速度变慢
+> 2. 数据的可靠性问题，如果出现网络断开的情况，消息的丢失如何处理的问题。
+
+---
+
+### 其他命令
+
+#### 排序
+
+类似关系型数据库中的`order by`关键字
+
+| 命令                                                         | 作用                   |
+| ------------------------------------------------------------ | ---------------------- |
+| SORT source-key [LIMIT offset count] [alpha] [ASC\|DESC] [STORE dest-key] | 根据条件进行排序并保存 |
+
+```shell
+# 模拟数据
+$ RPUSH list 0 1 10 12 5 9 6
+$ LRANGE list 0 -1
+1)  "0"
+2)  "1"
+3)  "10"
+4)  "12"
+5)  "5"
+6)  "9"
+7)  "6"
+# 倒序展示5个元素
+$ SORT list LIMIT 0 5 DESC
+1)  "12"
+2)  "10"
+3)  "9"
+4)  "6"
+5)  "5"
+# 正序并将结果保存到dest
+$ SORT list LIMIT 0 5 ALPHA ASC STORE dest
+"5"
+$ LRANGE dest 0 -1
+1)  "0"
+2)  "1"
+3)  "5"
+4)  "6"
+5)  "9"
+```
+
+> `ALPHA`表示对元素进行`字母表顺序`排序。
+>
+> `SORT`支持`LIST`、`HASH`、`SET`进行排序
+
+#### Redis基本事务
+
+`Redis基本事务`：让一个客户端在不被其他客户端打断的情况下执行多个命令，这需要用到`MULTI`、`EXEC`命令，与关系型数据库不同是：被`MULTI`、`EXEC`包裹的所有命令会一个接一个的执行，直到所有命令执行完毕，当一个事务执行完毕后，`Redis`才会处理其他客户端的命令。
+
+> Redis提供了5个命令用于不被打断的情况下对多键执行操作，它们分别是：`WATCH`、`MULTI`、`EXEC`、`UNWATCH`、`DISCARD`
+
+Redis接受到`MULTI`命令时，会键之后收到的命令放入`队列`中，直到客户端发送`EXEC`。然后就会在不被打断的情况下一条一条的执行命令。python上的redis库是通过`pipeline`实现，将多个命令打包好再发送给redis，减少网络通信的往返次数。
+
+```python
+def incr_decr():
+    # 获取队列
+    pipeline = connection.pipeline()
+    pipeline.incr('tran')
+    time.sleep(1)
+    pipeline.decr('tran')
+    print(pipeline.execute()[0])
+
+"""
+三个线程事务的执行加减法
+"""
+def transaction():
+    for i in range(3):
+        threading.Thread(target=incr_decr).start()
+    time.sleep(.5)
+    
+    
+# result: 1 1 1
+transaction()   
+```
+
+#### 过期时间
+
+>  `Redis`中可以通过设置`Expire time`来让键在给定的时间后自动被删除。
+
+| 命令                   | 作用                                       |
+| ---------------------- | ------------------------------------------ |
+| PERSIST                | 移除键的过期时间                           |
+| `TTL`                  | 查看指定键过期时间还有多少秒               |
+| `EXPIRE` key second    | 给定键指定`秒`后过期                       |
+| EXPIREAT key timestamp | 给定键指定`UNIX时间戳`格式后过期           |
+| PTTL                   | 查看指定键过期时间还有多少`毫秒`           |
+| PEXPIRE                | 给定键指定`毫秒`后过期                     |
+| PEXPIREDAT             | 给定键指定`毫秒`级别`UNIX时间戳`格式后过期 |
+
+> 对于`除了STRING`这样的结构来说，`EXPIRE`只会将`整个键过期`，而不会只过期其中的某条数据。
+
+```shell
+# 设置key-value
+$ SET hello world
+# 设置2s后过期,设为-1等于不过期
+$ EXPIRE hello 2
+# 2s后获取key对应的value不村子
+$ GET hello
+null
+# 查看距离过期还有多久s
+$ TTL hello
+"10"
+#如果已经过期返回-2
+$ TTL hello
+"-2"
+# 如果未设置过期时间，返回-1
+$ TTL demo
+"-1"
+```
+
+---
